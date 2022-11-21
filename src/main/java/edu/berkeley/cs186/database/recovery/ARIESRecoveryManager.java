@@ -462,6 +462,26 @@ public class ARIESRecoveryManager implements RecoveryManager {
         Map<Long, Pair<Transaction.Status, Long>> chkptTxnTable = new HashMap<>();
 
         // TODO(proj5): generate end checkpoint record(s) for DPT and transaction table
+        for (Long entry : dirtyPageTable.keySet()) {
+            if (!EndCheckpointLogRecord.fitsInOneRecord(chkptDPT.size() + 1, chkptTxnTable.size())) {
+                EndCheckpointLogRecord eclr = new EndCheckpointLogRecord(chkptDPT, chkptTxnTable);
+                logManager.appendToLog(eclr);
+                chkptDPT.clear();
+            }
+            chkptDPT.put(entry, dirtyPageTable.get(entry));
+        }
+
+        for (Long entry : transactionTable.keySet()) {
+            if (!EndCheckpointLogRecord.fitsInOneRecord(chkptDPT.size(), chkptTxnTable.size() + 1)) {
+                EndCheckpointLogRecord eclr = new EndCheckpointLogRecord(chkptDPT, chkptTxnTable);
+                logManager.appendToLog(eclr);
+                chkptDPT.clear();
+                chkptTxnTable.clear();
+            }
+            TransactionTableEntry t = transactionTable.get(entry);
+            Pair<Transaction.Status, Long> p = new Pair<Transaction.Status, Long>(t.transaction.getStatus(), t.lastLSN);
+            chkptTxnTable.put(entry, p);
+        }
 
         // Last end checkpoint record
         LogRecord endRecord = new EndCheckpointLogRecord(chkptDPT, chkptTxnTable);
