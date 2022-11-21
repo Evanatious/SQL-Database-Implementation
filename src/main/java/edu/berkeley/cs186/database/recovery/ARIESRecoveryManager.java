@@ -250,7 +250,15 @@ public class ARIESRecoveryManager implements RecoveryManager {
         assert (before.length == after.length);
         assert (before.length <= BufferManager.EFFECTIVE_PAGE_SIZE / 2);
         // TODO(proj5): implement
-        return -1L;
+        TransactionTableEntry t = transactionTable.get(transNum);
+
+        UpdatePageLogRecord uplr = new UpdatePageLogRecord(transNum, pageNum, t.lastLSN, pageOffset, before, after); //prevLSN = lastLSN
+        t.lastLSN = logManager.appendToLog(uplr); //lastLSN = LSN
+        if (!dirtyPageTable.containsKey(pageNum) || dirtyPageTable.get(pageNum) == null) {
+            dirtyPageTable.put(pageNum, t.lastLSN); //recLSN = if null or doesn't exist yet, then LSN
+        }
+
+        return t.lastLSN;
     }
 
     /**
