@@ -7,6 +7,7 @@ import edu.berkeley.cs186.database.io.DiskSpaceManager;
 import edu.berkeley.cs186.database.memory.BufferManager;
 import edu.berkeley.cs186.database.memory.Page;
 import edu.berkeley.cs186.database.recovery.records.*;
+import jdk.jpackage.internal.Log;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -594,6 +595,49 @@ public class ARIESRecoveryManager implements RecoveryManager {
         // Set of transactions that have completed
         Set<Long> endedTransactions = new HashSet<>();
         // TODO(proj5): implement
+        for (Iterator<LogRecord> it = logManager.scanFrom(LSN); it.hasNext(); ) {
+            record = it.next();
+            Optional<Long> transNum = record.getTransNum();
+            Optional<Long> pageNum = record.getPageNum();
+            LogType type = record.getType();
+
+            if (transNum.isPresent()) { //Case 1: Log Records for Transaction Operations
+                if (!transactionTable.containsKey(transNum)) {
+                    startTransaction(newTransaction.apply(transNum.get()));
+                }
+                transactionTable.get(transNum.get()).lastLSN = record.getLSN();
+            }
+
+            if (pageNum.isPresent()) { //Case 2: Log Records for Page Operations
+                if (type == LogType.UPDATE_PAGE || type == LogType.UNDO_UPDATE_PAGE) {
+                    dirtyPageTable.put(pageNum.get(), record.getDirtyPageTable().get(pageNum.get()));
+                } else if (type == LogType.FREE_PAGE || type == LogType.UNDO_ALLOC_PAGE) {
+                    //TODO: Do I need to manually "make the changes visible on disk immediately/flush the freed page to disk
+                    dirtyPageTable.remove(pageNum.get());
+                }
+            }
+
+            if (type == LogType.COMMIT_TRANSACTION || type == LogType.ABORT_TRANSACTION || type == LogType.END_TRANSACTION) { //Case 3: Log Records for Transaction Status Changes
+                TransactionTableEntry entry = transactionTable.get(transNum.get());
+                entry.lastLSN = record.getLSN(); //TODO: Not sure if this is true
+                if (type == LogType.COMMIT_TRANSACTION) {
+                    entry.transaction.setStatus(Transaction.Status.COMMITTING);
+                } else if (type == LogType.ABORT_TRANSACTION) {
+                    entry.transaction.setStatus(Transaction.Status.RECOVERY_ABORTING);
+                } else {
+                    entry.transaction.setStatus(Transaction.Status.COMPLETE);
+
+                    entry.transaction.cleanup();
+                    transactionTable.remove(transNum.get());
+                    endedTransactions.add(transNum.get());
+                }
+            }
+
+            if (type == LogType.END_CHECKPOINT) { //Case 4: Checkpoint Records
+
+            }
+
+        }
         return;
     }
 
