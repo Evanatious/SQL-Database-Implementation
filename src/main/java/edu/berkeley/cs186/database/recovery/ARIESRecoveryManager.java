@@ -7,7 +7,6 @@ import edu.berkeley.cs186.database.io.DiskSpaceManager;
 import edu.berkeley.cs186.database.memory.BufferManager;
 import edu.berkeley.cs186.database.memory.Page;
 import edu.berkeley.cs186.database.recovery.records.*;
-import jdk.jpackage.internal.Log;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -610,9 +609,13 @@ public class ARIESRecoveryManager implements RecoveryManager {
 
             if (pageNum.isPresent()) { //Case 2: Log Records for Page Operations
                 if (type == LogType.UPDATE_PAGE || type == LogType.UNDO_UPDATE_PAGE) {
-                    dirtyPageTable.put(pageNum.get(), record.getDirtyPageTable().get(pageNum.get()));
+                    dirtyPage(pageNum.get(), record.getLSN());
+                    if (record.getDirtyPageTable().get(pageNum.get()) != null) {
+                        dirtyPageTable.put(pageNum.get(), record.getDirtyPageTable().get(pageNum.get()));
+                    }
                 } else if (type == LogType.FREE_PAGE || type == LogType.UNDO_ALLOC_PAGE) {
                     //TODO: Do I need to manually "make the changes visible on disk immediately/flush the freed page to disk
+                    logManager.flushToLSN(record.getLSN());
                     dirtyPageTable.remove(pageNum.get());
                 }
             }
@@ -625,18 +628,72 @@ public class ARIESRecoveryManager implements RecoveryManager {
                 } else if (type == LogType.ABORT_TRANSACTION) {
                     entry.transaction.setStatus(Transaction.Status.RECOVERY_ABORTING);
                 } else {
+                    if (entry.transaction.getStatus() != Transaction.Status.COMPLETE) {
+                        entry.transaction.cleanup(); //TODO: Fix this/figure out why I need the if clause
+                    }
                     entry.transaction.setStatus(Transaction.Status.COMPLETE);
 
-                    entry.transaction.cleanup();
                     transactionTable.remove(transNum.get());
                     endedTransactions.add(transNum.get());
                 }
             }
 
             if (type == LogType.END_CHECKPOINT) { //Case 4: Checkpoint Records
+                for (Long entry: record.getDirtyPageTable().keySet()) {
+                    dirtyPageTable.put(entry, record.getDirtyPageTable().get(entry));
+                }
 
+                for (Long trans: record.getTransactionTable().keySet()) {
+                    if (!endedTransactions.contains(trans)) {
+                        boolean oldTExists = true;
+                        Pair<Transaction.Status, Long> newT = record.getTransactionTable().get(trans);
+                        TransactionTableEntry oldT = transactionTable.get(trans);
+                        if (oldT == null) {
+                            oldTExists = false;
+                        }
+                        long oldLSN = oldTExists ? oldT.lastLSN : 0;
+                        Transaction.Status oldStatus = oldTExists? oldT.transaction.getStatus() : Transaction.Status.RUNNING;
+                        Transaction.Status newStatus = newT.getFirst();
+
+                        if (!oldTExists) {
+                            startTransaction(newTransaction.apply(trans)); //TODO: Should only do this is the corresponding entry DIDN'T exist
+                        }
+                        oldT = transactionTable.get(trans); //In case there wasn't an oldT
+                        oldT.lastLSN = Math.max(newT.getSecond(), oldLSN); //TODO: Does .getSecond get the LSN of the checkpoint LSN?
+                        if (newStatus == Transaction.Status.COMPLETE) {
+                            oldT.transaction.setStatus(Transaction.Status.COMPLETE);
+                        } else if (oldStatus == Transaction.Status.RUNNING) {
+                            if (newStatus == Transaction.Status.ABORTING) {
+                                oldT.transaction.setStatus(Transaction.Status.RECOVERY_ABORTING);
+                            } else {
+                                oldT.transaction.setStatus(newStatus);
+                            }
+                        }
+                    }
+
+                }
             }
 
+
+        }
+        //Part 5: Ending Transactions
+        for (Long entry : transactionTable.keySet()) {
+            Transaction t = transactionTable.get(entry).transaction;
+            if (t.getStatus() == Transaction.Status.COMMITTING) {
+                t.cleanup();
+                t.setStatus(Transaction.Status.COMPLETE);
+
+                if (transactionTable.get(entry) == null) {
+                    logManager.appendToLog(new EndTransactionLogRecord(entry, 0)); //TODO: No idea if this is right
+                } else {
+                    logManager.appendToLog(new EndTransactionLogRecord(entry, transactionTable.get(entry).lastLSN));
+                }
+                transactionTable.remove(entry);
+            } else if (t.getStatus() == Transaction.Status.RUNNING) {
+                t.setStatus(Transaction.Status.RECOVERY_ABORTING);
+                long newLSN = logManager.appendToLog(new AbortTransactionLogRecord(entry, transactionTable.get(entry).lastLSN));
+                transactionTable.get(entry).lastLSN = newLSN;
+            }
         }
         return;
     }
