@@ -712,6 +712,35 @@ public class ARIESRecoveryManager implements RecoveryManager {
      */
     void restartRedo() {
         // TODO(proj5): implement
+        //Tip: Be sure to account for the case where restartRedo is called on an empty log!
+        long firstLSN;
+        if (!dirtyPageTable.isEmpty()) {
+            firstLSN = Collections.min(dirtyPageTable.values()); //Determines point in log where to start REDO (smallest of all pages' recLSNs
+            for (Iterator<LogRecord> it = logManager.scanFrom(firstLSN); it.hasNext(); ) {
+                LogRecord r = it.next();
+                LogType type = r.getType();
+                if (r.isRedoable()) {
+                    if (type == LogType.ALLOC_PART || type == LogType.FREE_PART || type == LogType.UNDO_ALLOC_PART || type == LogType.UNDO_FREE_PART
+                    || type == LogType.ALLOC_PAGE || type == LogType.UNDO_FREE_PAGE) {
+                        r.redo(this, diskSpaceManager, bufferManager);
+                    } else if (type == LogType.UPDATE_PAGE || type == LogType.UNDO_UPDATE_PAGE || type == LogType.FREE_PAGE || type == LogType.UNDO_ALLOC_PAGE) {
+                        long pageNum = r.getPageNum().get();
+                        Page page = bufferManager.fetchPage(new DummyLockContext(), pageNum);
+                        try {
+                            if (dirtyPageTable.containsKey(pageNum) && r.getLSN() >= dirtyPageTable.get(pageNum) && page.getPageLSN() < r.getLSN()) {
+                                r.redo(this, diskSpaceManager, bufferManager);
+                            }
+                        } finally {
+                            page.unpin();
+                        }
+                    }
+                }
+
+
+            }
+
+        }
+
         return;
     }
 
@@ -730,6 +759,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
      */
     void restartUndo() {
         // TODO(proj5): implement
+        //Tip: Make sure your undo logic still works without error even if there are no transactions that need to be undone after analysis.
         return;
     }
 
