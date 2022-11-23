@@ -760,6 +760,58 @@ public class ARIESRecoveryManager implements RecoveryManager {
     void restartUndo() {
         // TODO(proj5): implement
         //Tip: Make sure your undo logic still works without error even if there are no transactions that need to be undone after analysis.
+        PriorityQueue<Long> toUndo = new PriorityQueue<Long>(Collections.reverseOrder());
+        for (TransactionTableEntry entry : transactionTable.values()) {
+            if (entry.transaction.getStatus() == Transaction.Status.RECOVERY_ABORTING) {
+                toUndo.add(entry.lastLSN);
+            }
+        }
+
+        while (!toUndo.isEmpty()) {
+            Long currLSN = toUndo.remove();
+            LogRecord record = logManager.fetchLogRecord(currLSN);
+            if (record.isUndoable()) {
+                //Maybe missing a line?
+                LogRecord clr = record.undo(currLSN);
+                long clrLSN = logManager.appendToLog(clr);
+                //transactionTable.get(currLSN).lastLSN = clrLSN; //TODO: Not sure if this is updating the transaction correctly, or if it's even needed
+                clr.redo(this, diskSpaceManager, bufferManager);
+            }
+
+            Long newLSN = record.getUndoNextLSN().orElse(record.getPrevLSN().get());
+            toUndo.add(newLSN);
+            if (newLSN == 0) {
+                TransactionTableEntry entry = transactionTable.get(newLSN);
+                if (entry != null) {
+                    entry.transaction.cleanup();
+                    entry.transaction.setStatus(Transaction.Status.COMPLETE);
+                    transactionTable.remove(newLSN);
+                }
+
+                /*
+                if (transactionTable.get(prevLSN) != null) {
+                    Transaction t = transactionTable.get(prevLSN).transaction;
+
+                    if (t.getStatus() == Transaction.Status.COMMITTING) {
+                        t.cleanup();
+                        t.setStatus(Transaction.Status.COMPLETE);
+
+                        if (transactionTable.get(prevLSN) == null) {
+                            logManager.appendToLog(new EndTransactionLogRecord(prevLSN, 0)); //TODO: No idea if this is right
+                        } else {
+                            logManager.appendToLog(new EndTransactionLogRecord(prevLSN, transactionTable.get(prevLSN).lastLSN));
+                        }
+                        transactionTable.remove(prevLSN);
+                    } else if (t.getStatus() == Transaction.Status.RUNNING) {
+                        t.setStatus(Transaction.Status.RECOVERY_ABORTING);
+                        long newerLSN = logManager.appendToLog(new AbortTransactionLogRecord(prevLSN, transactionTable.get(prevLSN).lastLSN));
+                        transactionTable.get(prevLSN).lastLSN = newerLSN;
+                    }
+                }*/
+
+                toUndo.remove(newLSN);
+            }
+        }
         return;
     }
 
