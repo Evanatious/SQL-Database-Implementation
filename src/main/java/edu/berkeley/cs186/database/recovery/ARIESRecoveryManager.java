@@ -614,7 +614,6 @@ public class ARIESRecoveryManager implements RecoveryManager {
                         dirtyPageTable.put(pageNum.get(), record.getDirtyPageTable().get(pageNum.get()));
                     }
                 } else if (type == LogType.FREE_PAGE || type == LogType.UNDO_ALLOC_PAGE) {
-                    //TODO: Do I need to manually "make the changes visible on disk immediately/flush the freed page to disk
                     logManager.flushToLSN(record.getLSN());
                     dirtyPageTable.remove(pageNum.get());
                 }
@@ -622,14 +621,14 @@ public class ARIESRecoveryManager implements RecoveryManager {
 
             if (type == LogType.COMMIT_TRANSACTION || type == LogType.ABORT_TRANSACTION || type == LogType.END_TRANSACTION) { //Case 3: Log Records for Transaction Status Changes
                 TransactionTableEntry entry = transactionTable.get(transNum.get());
-                entry.lastLSN = record.getLSN(); //TODO: Not sure if this is true
+                entry.lastLSN = record.getLSN();
                 if (type == LogType.COMMIT_TRANSACTION) {
                     entry.transaction.setStatus(Transaction.Status.COMMITTING);
                 } else if (type == LogType.ABORT_TRANSACTION) {
                     entry.transaction.setStatus(Transaction.Status.RECOVERY_ABORTING);
                 } else {
                     if (entry.transaction.getStatus() != Transaction.Status.COMPLETE) {
-                        entry.transaction.cleanup(); //TODO: Fix this/figure out why I need the if clause
+                        entry.transaction.cleanup();
                     }
                     entry.transaction.setStatus(Transaction.Status.COMPLETE);
 
@@ -656,10 +655,10 @@ public class ARIESRecoveryManager implements RecoveryManager {
                         Transaction.Status newStatus = newT.getFirst();
 
                         if (!oldTExists) {
-                            startTransaction(newTransaction.apply(trans)); //TODO: Should only do this is the corresponding entry DIDN'T exist
+                            startTransaction(newTransaction.apply(trans));
                         }
                         oldT = transactionTable.get(trans); //In case there wasn't an oldT
-                        oldT.lastLSN = Math.max(newT.getSecond(), oldLSN); //TODO: Does .getSecond get the LSN of the checkpoint LSN?
+                        oldT.lastLSN = Math.max(newT.getSecond(), oldLSN);
                         if (newStatus == Transaction.Status.COMPLETE) {
                             oldT.transaction.setStatus(Transaction.Status.COMPLETE);
                         } else if (oldStatus == Transaction.Status.RUNNING) {
@@ -684,7 +683,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
                 t.setStatus(Transaction.Status.COMPLETE);
 
                 if (transactionTable.get(entry) == null) {
-                    logManager.appendToLog(new EndTransactionLogRecord(entry, 0)); //TODO: No idea if this is right
+                    logManager.appendToLog(new EndTransactionLogRecord(entry, 0));
                 } else {
                     logManager.appendToLog(new EndTransactionLogRecord(entry, transactionTable.get(entry).lastLSN));
                 }
@@ -770,44 +769,27 @@ public class ARIESRecoveryManager implements RecoveryManager {
         while (!toUndo.isEmpty()) {
             Long currLSN = toUndo.remove();
             LogRecord record = logManager.fetchLogRecord(currLSN);
+
             if (record.isUndoable()) {
-                //Maybe missing a line?
-                LogRecord clr = record.undo(currLSN);
+                // undo it, and append the appropriate CLR
+                LogRecord clr = record.undo(transactionTable.get(record.getTransNum().get()).lastLSN);
                 long clrLSN = logManager.appendToLog(clr);
-                //transactionTable.get(currLSN).lastLSN = clrLSN; //TODO: Not sure if this is updating the transaction correctly, or if it's even needed
+                transactionTable.get(record.getTransNum().get()).lastLSN = clrLSN;
                 clr.redo(this, diskSpaceManager, bufferManager);
             }
 
             Long newLSN = record.getUndoNextLSN().orElse(record.getPrevLSN().get());
             toUndo.add(newLSN);
             if (newLSN == 0) {
-                TransactionTableEntry entry = transactionTable.get(newLSN);
-                if (entry != null) {
-                    entry.transaction.cleanup();
-                    entry.transaction.setStatus(Transaction.Status.COMPLETE);
-                    transactionTable.remove(newLSN);
-                }
+                //end the transaction, cleanup(), set status to complete, end transaction record written, removed from transaction table
+                TransactionTableEntry entry = transactionTable.get(record.getTransNum().get());
+                entry.transaction.cleanup();
+                entry.transaction.setStatus(Transaction.Status.COMPLETE);
 
-                /*
-                if (transactionTable.get(prevLSN) != null) {
-                    Transaction t = transactionTable.get(prevLSN).transaction;
-
-                    if (t.getStatus() == Transaction.Status.COMMITTING) {
-                        t.cleanup();
-                        t.setStatus(Transaction.Status.COMPLETE);
-
-                        if (transactionTable.get(prevLSN) == null) {
-                            logManager.appendToLog(new EndTransactionLogRecord(prevLSN, 0)); //TODO: No idea if this is right
-                        } else {
-                            logManager.appendToLog(new EndTransactionLogRecord(prevLSN, transactionTable.get(prevLSN).lastLSN));
-                        }
-                        transactionTable.remove(prevLSN);
-                    } else if (t.getStatus() == Transaction.Status.RUNNING) {
-                        t.setStatus(Transaction.Status.RECOVERY_ABORTING);
-                        long newerLSN = logManager.appendToLog(new AbortTransactionLogRecord(prevLSN, transactionTable.get(prevLSN).lastLSN));
-                        transactionTable.get(prevLSN).lastLSN = newerLSN;
-                    }
-                }*/
+                EndTransactionLogRecord etlr = new EndTransactionLogRecord(record.getTransNum().get(), entry.lastLSN);
+                long etlrLSN = logManager.appendToLog(etlr); //Append end record to Log
+                transactionTable.get(record.getTransNum().get()).lastLSN = etlrLSN;
+                transactionTable.remove(record.getTransNum().get());
 
                 toUndo.remove(newLSN);
             }
